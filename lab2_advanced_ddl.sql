@@ -244,6 +244,8 @@ CREATE TABLE semester_calendar (
 UPDATE pg_database SET datistemplate = false WHERE datname = 'university_test';
 DROP DATABASE IF EXISTS university_test;
 DROP DATABASE IF EXISTS university_distributed;
+DROP DATABASE IF EXISTS university_backup;
 
 CREATE DATABASE university_backup TEMPLATE university_main;
+
 -- End of lab2_advanced_ddl.sql
