@@ -1,4 +1,7 @@
--- CLEANUP
+-- ======================================================
+---BONUS TASK
+-- ======================================================
+
 DROP MATERIALIZED VIEW IF EXISTS mv_salary_batch_summary;
 DROP VIEW IF EXISTS suspicious_activity_view CASCADE;
 DROP VIEW IF EXISTS daily_transaction_report CASCADE;
@@ -13,7 +16,7 @@ DROP TABLE IF EXISTS exchange_rates CASCADE;
 DROP TABLE IF EXISTS accounts CASCADE;
 DROP TABLE IF EXISTS customers CASCADE;
 
--- CUSTOMERS
+
 CREATE TABLE customers(
     customer_id SERIAL PRIMARY KEY,
     iin VARCHAR(12) UNIQUE,
@@ -25,7 +28,7 @@ CREATE TABLE customers(
     daily_limit_kzt NUMERIC
 );
 
--- ACCOUNTS
+
 CREATE TABLE accounts(
     account_id SERIAL PRIMARY KEY,
     customer_id INT REFERENCES customers(customer_id),
@@ -37,7 +40,6 @@ CREATE TABLE accounts(
     closed_at TIMESTAMPTZ
 );
 
--- EXCHANGE RATES
 CREATE TABLE exchange_rates(
     rate_id SERIAL PRIMARY KEY,
     from_currency CHAR(3),
@@ -47,7 +49,6 @@ CREATE TABLE exchange_rates(
     valid_to TIMESTAMPTZ
 );
 
--- TRANSACTIONS
 CREATE TABLE transactions(
     transaction_id BIGSERIAL PRIMARY KEY,
     from_account_id INT REFERENCES accounts(account_id),
@@ -63,7 +64,7 @@ CREATE TABLE transactions(
     description TEXT
 );
 
--- AUDIT LOG
+
 CREATE TABLE audit_log(
     log_id BIGSERIAL PRIMARY KEY,
     table_name TEXT,
@@ -76,7 +77,7 @@ CREATE TABLE audit_log(
     ip_address TEXT
 );
 
--- INSERT CUSTOMERS
+
 INSERT INTO customers(iin, full_name, phone, email, status, daily_limit_kzt)
 VALUES
 ('111111111111','Ismuhanov Anuar','+77770000001','anuar@kbtu.kz','active',5000000),
@@ -90,7 +91,7 @@ VALUES
 ('999999999999','DArkhan','+77770000009','two@kbtu.kz','active',2000000),
 ('101010101010','Saitama','+77770000010','three@kbtu.kz','active',5000000);
 
--- ACCOUNTS
+
 INSERT INTO accounts(customer_id, account_number, currency, balance)
 VALUES
 (1,'ACC001KZT','KZT',2000000),
@@ -104,7 +105,7 @@ VALUES
 (9,'ACC009USD','USD',1500),
 (10,'ACC010KZT','KZT',250000);
 
--- EXCHANGE RATES
+
 INSERT INTO exchange_rates(from_currency,to_currency,rate,valid_from,valid_to)
 VALUES
 ('USD','KZT',470,now(),null),
@@ -113,7 +114,7 @@ VALUES
 ('KZT','USD',1/470,now(),null),
 ('KZT','EUR',1/505,now(),null);
 
--- INDEXES
+---TASK 3
 CREATE INDEX idx_acc_num ON accounts(account_number);
 CREATE INDEX idx_cust_iin_hash ON customers USING HASH(iin);
 CREATE INDEX idx_email_ci ON customers(lower(email));
@@ -121,8 +122,14 @@ CREATE INDEX idx_acc_active ON accounts(customer_id) WHERE is_active = true;
 CREATE INDEX idx_tx_from_time ON transactions(from_account_id,created_at DESC);
 CREATE INDEX idx_audit_new_gin ON audit_log USING GIN(new_values jsonb_path_ops);
 CREATE INDEX idx_audit_old_gin ON audit_log USING GIN(old_values jsonb_path_ops);
+CREATE INDEX idx_accounts_customer_currency ON accounts(customer_id, currency);
+CREATE INDEX idx_customers_email_lower ON customers ((lower(email)));
+CREATE INDEX idx_transactions_created_brin ON transactions USING BRIN(created_at);
+CREATE INDEX idx_tx_from_created_amount ON transactions(from_account_id, created_at DESC, amount_kzt);
 
--- RATE FUNCTION
+
+-- SUPPORTING FUNCTIONS
+
 CREATE OR REPLACE FUNCTION get_latest_rate(f CHAR(3), t CHAR(3))
 RETURNS NUMERIC AS $$
 DECLARE r NUMERIC;
@@ -140,7 +147,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- AUDIT FUNCTION
+
 CREATE OR REPLACE FUNCTION audit_insert(t TEXT, id TEXT, act TEXT, o JSONB, n JSONB)
 RETURNS VOID AS $$
 BEGIN
@@ -149,7 +156,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- FIXED process_transfer
+
+-- TASK 1
 CREATE OR REPLACE FUNCTION process_transfer(
     p_from_account_number TEXT,
     p_to_account_number   TEXT,
@@ -167,26 +175,26 @@ DECLARE
     v_daily_sum NUMERIC;
     v_conv NUMERIC;
 BEGIN
-    IF p_amount <= 0 THEN
-        RETURN jsonb_build_object('status','error','code','INVALID_AMOUNT');
+    IF p_amount IS NULL OR p_amount <= 0 THEN
+
+        RAISE EXCEPTION USING MESSAGE = 'INVALID_AMOUNT', ERRCODE = 'P0001';
     END IF;
 
     SELECT * INTO v_from FROM accounts WHERE account_number = p_from_account_number FOR UPDATE;
-    IF NOT FOUND THEN RETURN jsonb_build_object('status','error','code','FROM_ACCOUNT_NOT_FOUND'); END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION USING MESSAGE = 'FROM_ACCOUNT_NOT_FOUND', ERRCODE = 'P0002'; END IF;
 
     SELECT * INTO v_to FROM accounts WHERE account_number = p_to_account_number FOR UPDATE;
-    IF NOT FOUND THEN RETURN jsonb_build_object('status','error','code','TO_ACCOUNT_NOT_FOUND'); END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION USING MESSAGE = 'TO_ACCOUNT_NOT_FOUND', ERRCODE = 'P0003'; END IF;
 
-    IF NOT v_from.is_active THEN RETURN jsonb_build_object('status','error','code','FROM_ACCOUNT_INACTIVE'); END IF;
-    IF NOT v_to.is_active THEN RETURN jsonb_build_object('status','error','code','TO_ACCOUNT_INACTIVE'); END IF;
+    IF NOT v_from.is_active THEN RAISE EXCEPTION USING MESSAGE = 'FROM_ACCOUNT_INACTIVE', ERRCODE = 'P0004'; END IF;
+    IF NOT v_to.is_active THEN RAISE EXCEPTION USING MESSAGE = 'TO_ACCOUNT_INACTIVE', ERRCODE = 'P0005'; END IF;
 
     SELECT * INTO v_sender FROM customers WHERE customer_id = v_from.customer_id;
-    IF v_sender.status <> 'active' THEN
-        RETURN jsonb_build_object('status','error','code','SENDER_NOT_ACTIVE');
-    END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION USING MESSAGE='SENDER_NOT_FOUND', ERRCODE='P0006'; END IF;
+    IF v_sender.status IS DISTINCT FROM 'active' THEN RAISE EXCEPTION USING MESSAGE='SENDER_NOT_ACTIVE', ERRCODE='P0007'; END IF;
 
     v_rate := get_latest_rate(p_currency,'KZT');
-    IF v_rate IS NULL THEN RETURN jsonb_build_object('status','error','code','RATE_NOT_FOUND'); END IF;
+    IF v_rate IS NULL THEN RAISE EXCEPTION USING MESSAGE='RATE_NOT_FOUND', ERRCODE='P0008'; END IF;
 
     v_amount_kzt := p_amount * v_rate;
 
@@ -197,18 +205,16 @@ BEGIN
       AND t.created_at::date = now()::date
       AND t.status IN ('pending','completed');
 
-    IF v_daily_sum + v_amount_kzt > v_sender.daily_limit_kzt THEN
-        RETURN jsonb_build_object('status','error','code','DAILY_LIMIT_EXCEEDED');
+    IF v_daily_sum + v_amount_kzt > COALESCE(v_sender.daily_limit_kzt, 0) THEN
+        RAISE EXCEPTION USING MESSAGE='DAILY_LIMIT_EXCEEDED', ERRCODE='P0009';
     END IF;
 
     IF v_from.currency = p_currency THEN
-        IF v_from.balance < p_amount THEN
-            RETURN jsonb_build_object('status','error','code','INSUFFICIENT_FUNDS');
-        END IF;
+        IF v_from.balance < p_amount THEN RAISE EXCEPTION USING MESSAGE='INSUFFICIENT_FUNDS', ERRCODE='P0010'; END IF;
     ELSE
         v_conv := get_latest_rate(p_currency, v_from.currency);
         IF v_conv IS NULL OR v_from.balance < p_amount * v_conv THEN
-            RETURN jsonb_build_object('status','error','code','INSUFFICIENT_FUNDS');
+            RAISE EXCEPTION USING MESSAGE='INSUFFICIENT_FUNDS', ERRCODE='P0010';
         END IF;
     END IF;
 
@@ -252,42 +258,55 @@ BEGIN
         RELEASE SAVEPOINT sp_transfer;
 
         RETURN jsonb_build_object('status','ok','transaction_id',v_txid);
-EXCEPTION WHEN OTHERS THEN
-    -- Обновляем статус транзакции, если она была создана
-    IF v_txid IS NOT NULL THEN
-        UPDATE transactions
-        SET status = 'failed',
-            completed_at = now()
-        WHERE transaction_id = v_txid;
-    END IF;
-
-    PERFORM audit_insert(
-        'transactions', NULL, 'FAILED',
-        NULL, jsonb_build_object('error', SQLERRM,'desc',p_desc)
-    );
-
-    RETURN jsonb_build_object('status','error','message',SQLERRM);
-
+    EXCEPTION WHEN OTHERS THEN
+        DECLARE
+            v_code TEXT := COALESCE(SQLSTATE, 'P9999');
+            v_msg  TEXT := COALESCE(SQLERRM, 'unknown error');
+        BEGIN
+            IF v_txid IS NOT NULL THEN
+                UPDATE transactions
+                SET status = 'failed', completed_at = now()
+                WHERE transaction_id = v_txid;
+            END IF;
+            PERFORM audit_insert(
+                'transactions',
+                COALESCE(v_txid::text, 'NULL'),
+                'FAILED',
+                NULL,
+                jsonb_build_object('error_code', v_code, 'error', v_msg,
+                                   'from', p_from_account_number, 'to', p_to_account_number, 'amount', p_amount, 'currency', p_currency, 'description', p_desc)
+            );
+            RETURN jsonb_build_object('status','error','code', v_code, 'message', v_msg);
+        END;
     END;
 END;
 $$ LANGUAGE plpgsql;
 
--- FIXED process_salary_batch
+-- TASK 4
+
 CREATE OR REPLACE FUNCTION process_salary_batch(acc TEXT, js JSONB)
 RETURNS JSONB AS $$
 DECLARE
+    lock_key BIGINT := hashtext(acc);
     company accounts%ROWTYPE;
     row JSONB;
-    total NUMERIC:=0;
-    succ INT:=0;
-    fail INT:=0;
-    failjson JSONB:='[]';
-    cust customers%ROWTYPE;
-    acc_t accounts%ROWTYPE;
-    tx BIGINT := NULL;
+    total NUMERIC := 0;
+    succ INT := 0;
+    fail INT := 0;
+    failjson JSONB := '[]';
+    cust_rec RECORD;
+    target_acc RECORD;
+    txid BIGINT;
+
 BEGIN
-    SELECT * INTO company FROM accounts WHERE account_number=acc FOR UPDATE;
-    IF NOT FOUND THEN RETURN '{"error":"company not found"}'; END IF;
+
+    PERFORM pg_advisory_lock(lock_key);
+
+    SELECT * INTO company FROM accounts WHERE account_number = acc FOR UPDATE;
+    IF NOT FOUND THEN
+        PERFORM pg_advisory_unlock(lock_key);
+        RETURN jsonb_build_object('status','error','code','COMPANY_NOT_FOUND');
+    END IF;
 
     FOR row IN SELECT * FROM jsonb_array_elements(js)
     LOOP
@@ -295,65 +314,193 @@ BEGIN
     END LOOP;
 
     IF company.balance < total THEN
-        RETURN '{"error":"not enough money"}';
+        PERFORM pg_advisory_unlock(lock_key);
+        RETURN jsonb_build_object('status','error','code','COMPANY_INSUFFICIENT_FUNDS');
     END IF;
 
-    FOR row IN SELECT * FROM jsonb_array_elements(js)
-    LOOP
-        SELECT * INTO cust FROM customers WHERE iin = row->>'iin';
+    CREATE TEMP TABLE tmp_salary_deltas(account_id INT PRIMARY KEY, delta NUMERIC) ON COMMIT DROP;
+
+FOR row IN SELECT * FROM jsonb_array_elements(js)
+LOOP
+    BEGIN
+        SELECT customer_id INTO cust_rec FROM customers WHERE iin = row->>'iin';
         IF NOT FOUND THEN
-            fail:=fail+1;
-            failjson:=failjson||jsonb_build_object('iin',row->>'iin');
+            fail := fail + 1;
+            failjson := failjson || jsonb_build_object('iin', row->>'iin', 'error', 'CUSTOMER_NOT_FOUND');
             CONTINUE;
         END IF;
+        SELECT account_id, currency INTO target_acc FROM accounts WHERE customer_id = cust_rec.customer_id LIMIT 1;
+        IF NOT FOUND OR target_acc.account_id IS NULL THEN
+            fail := fail + 1;
+            failjson := failjson || jsonb_build_object('iin', row->>'iin', 'error', 'ACCOUNT_NOT_FOUND');
+            CONTINUE;
+        END IF;
+        DECLARE
+            amount_in_company NUMERIC := (row->>'amount')::numeric;
+            conv_rate NUMERIC := get_latest_rate(company.currency, target_acc.currency);
+            recipient_amount NUMERIC;
+            recipient_amount_kzt NUMERIC;
+            txid BIGINT;
+        BEGIN
+            IF target_acc.currency = company.currency THEN
+                recipient_amount := amount_in_company;
+            ELSE
+                IF conv_rate IS NULL THEN
+                    fail := fail + 1;
+                    failjson := failjson || jsonb_build_object('iin', row->>'iin', 'error', 'RATE_NOT_FOUND');
+                    CONTINUE;
+                END IF;
+                recipient_amount := amount_in_company * conv_rate;
+            END IF;
 
-        SELECT * INTO acc_t FROM (
-            SELECT * FROM accounts WHERE customer_id=cust.customer_id LIMIT 1
-        ) sub;
+            recipient_amount_kzt := recipient_amount * COALESCE(get_latest_rate(target_acc.currency, 'KZT'), 0);
+            INSERT INTO tmp_salary_deltas(account_id, delta)
+            VALUES (target_acc.account_id, recipient_amount)
+            ON CONFLICT (account_id) DO UPDATE SET delta = tmp_salary_deltas.delta + EXCLUDED.delta;
 
-        INSERT INTO transactions(from_account_id,to_account_id,amount,currency,exchange_rate,amount_kzt,type,status)
-        VALUES(company.account_id,acc_t.account_id,
-               (row->>'amount')::numeric,acc_t.currency,
-               get_latest_rate(acc_t.currency,'KZT'),
-               (row->>'amount')::numeric*get_latest_rate(acc_t.currency,'KZT'),
-               'transfer','completed')
-        RETURNING transaction_id INTO tx;
+            INSERT INTO transactions(from_account_id, to_account_id, amount, currency, exchange_rate, amount_kzt, type, status, created_at, description)
+            VALUES (company.account_id, target_acc.account_id, amount_in_company, target_acc.currency, COALESCE(get_latest_rate(company.currency, target_acc.currency),1), recipient_amount_kzt, 'salary', 'pending', now(), row->>'description')
+            RETURNING transaction_id INTO txid;
 
-        UPDATE accounts SET balance = balance - (row->>'amount')::numeric
-        WHERE account_id=company.account_id;
+            succ := succ + 1;
+        END;
+    EXCEPTION WHEN OTHERS THEN
+        fail := fail + 1;
+        failjson := failjson || jsonb_build_object('iin', row->>'iin', 'error', SQLERRM);
+        CONTINUE;
+    END;
+END LOOP;
 
-        UPDATE accounts SET balance = balance + (row->>'amount')::numeric
-        WHERE account_id=acc_t.account_id;
+    UPDATE accounts SET balance = balance - total WHERE account_id = company.account_id;
+    FOR target_acc IN SELECT account_id, delta FROM tmp_salary_deltas
+    LOOP
+        UPDATE accounts SET balance = balance + target_acc.delta WHERE account_id = target_acc.account_id;
 
-        succ:=succ+1;
+        UPDATE transactions
+        SET status = 'completed', completed_at = now()
+        WHERE from_account_id = company.account_id
+          AND to_account_id = target_acc.account_id
+          AND status = 'pending';
     END LOOP;
+    PERFORM audit_insert('transactions', company.account_id::text, 'BATCH_SALARY', NULL, jsonb_build_object('success', succ, 'failed', fail, 'details', failjson));
+    PERFORM pg_advisory_unlock(lock_key);
 
-    RETURN jsonb_build_object('success',succ,'failed',fail,'details',failjson);
+    RETURN jsonb_build_object('success', succ, 'failed', fail, 'details', failjson);
 END;
 $$ LANGUAGE plpgsql;
 
--- VIEWS
-CREATE VIEW customer_balance_summary AS
-SELECT c.customer_id,c.full_name,a.account_number,a.currency,a.balance,
-       (a.balance*get_latest_rate(a.currency,'KZT')) AS balance_kzt,
-       SUM(a.balance*get_latest_rate(a.currency,'KZT'))
-         OVER(PARTITION BY c.customer_id) AS total_kzt
-FROM customers c JOIN accounts a USING(customer_id);
 
-CREATE VIEW daily_transaction_report AS
-SELECT created_at::date AS day,type,
-       COUNT(*) AS cnt,
-       SUM(amount_kzt) AS total_kzt
-FROM transactions
-GROUP BY day,type;
+-- TASK 2
 
-CREATE VIEW suspicious_activity_view
-WITH(security_barrier=true) AS
-SELECT * FROM transactions WHERE amount_kzt >= 5000000;
+CREATE OR REPLACE VIEW customer_balance_summary AS
+WITH balances AS (
+    SELECT
+        c.customer_id,
+        c.full_name,
+        a.account_number,
+        a.currency,
+        a.balance,
+        a.balance * get_latest_rate(a.currency, 'KZT') AS balance_kzt,
+        SUM(a.balance * get_latest_rate(a.currency, 'KZT')) OVER (PARTITION BY c.customer_id) AS total_kzt,
+        c.daily_limit_kzt
+    FROM customers c
+    JOIN accounts a ON a.customer_id = c.customer_id
+)
+SELECT
+    customer_id,
+    full_name,
+    account_number,
+    currency,
+    balance,
+    balance_kzt,
+    total_kzt,
+    CASE
+        WHEN daily_limit_kzt IS NULL OR daily_limit_kzt = 0 THEN NULL
+        ELSE 100.0 * total_kzt / daily_limit_kzt
+    END AS daily_limit_usage_pct,
+    RANK() OVER (ORDER BY total_kzt DESC) AS balance_rank
+FROM balances;
 
--- MATERIALIZED VIEW
+
+
+CREATE OR REPLACE VIEW daily_transaction_report AS
+WITH daily AS (
+    SELECT created_at::date AS day,
+           type,
+           COUNT(*) AS cnt,
+           SUM(amount_kzt) AS total_kzt,
+           AVG(amount_kzt) AS avg_amount
+    FROM transactions
+    GROUP BY created_at::date, type
+)
+SELECT
+    day,
+    type,
+    cnt,
+    total_kzt,
+    avg_amount,
+    SUM(total_kzt) OVER (ORDER BY day) AS running_total_kzt,
+    LAG(total_kzt) OVER (ORDER BY day) AS prev_day_total_kzt,
+    CASE
+        WHEN LAG(total_kzt) OVER (ORDER BY day) IS NULL THEN NULL
+        ELSE 100.0 * (total_kzt - LAG(total_kzt) OVER (ORDER BY day)) / LAG(total_kzt) OVER (ORDER BY day)
+    END AS day_over_day_pct
+FROM daily
+ORDER BY day;
+
+
+CREATE OR REPLACE VIEW suspicious_activity_view
+WITH (security_barrier = true) AS
+SELECT *
+FROM (
+    SELECT t.*,
+           date_trunc('hour', t.created_at) AS hour_bucket,
+           COUNT(*) OVER (PARTITION BY t.from_account_id, date_trunc('hour', t.created_at)) AS tx_count_in_hour,
+           EXTRACT(EPOCH FROM (t.created_at - LAG(t.created_at) OVER (PARTITION BY t.from_account_id ORDER BY t.created_at))) AS seconds_from_prev,
+           CASE WHEN EXTRACT(EPOCH FROM (t.created_at - LAG(t.created_at) OVER (PARTITION BY t.from_account_id ORDER BY t.created_at))) < 60 THEN true ELSE false END AS rapid_sequential
+    FROM transactions t
+) s
+WHERE s.amount_kzt >= 5000000 OR s.tx_count_in_hour > 10 OR s.rapid_sequential = true;
+
+
+
+-- TASK 4
+
 CREATE MATERIALIZED VIEW mv_salary_batch_summary AS
 SELECT created_at::date AS day, COUNT(*) AS cnt, SUM(amount_kzt) AS total_kzt
 FROM transactions
 GROUP BY day
 ORDER BY day DESC;
+
+CREATE MATERIALIZED VIEW mv_salary_batch_monthly_summary AS
+SELECT date_trunc('month', created_at)::date AS month,
+       COUNT(*) FILTER (WHERE type = 'salary' OR type = 'transfer') AS cnt,
+       SUM(amount_kzt) FILTER (WHERE type = 'salary' OR type = 'transfer') AS total_kzt,
+       AVG(amount_kzt) FILTER (WHERE type = 'salary' OR type = 'transfer') AS avg_amount_kzt,
+       MAX(amount_kzt) FILTER (WHERE type = 'salary' OR type = 'transfer') AS max_amount_kzt
+FROM transactions
+GROUP BY month
+ORDER BY month DESC;
+
+---TEST FUNCTIONS
+
+CREATE OR REPLACE FUNCTION audit_insert_extended(t TEXT, id TEXT, act TEXT, o JSONB, n JSONB, who TEXT, ip TEXT)
+RETURNS VOID AS $$
+BEGIN
+    INSERT INTO audit_log(table_name,record_id,action,old_values,new_values,changed_by,ip_address)
+    VALUES(t,id,act,o,n,who,ip);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION test_locking_simulation(from_acc TEXT, to_acc TEXT, amount NUMERIC)
+RETURNS TEXT AS $$
+DECLARE
+    v1 accounts%ROWTYPE;
+BEGIN
+    SELECT * INTO v1 FROM accounts WHERE account_number = from_acc FOR UPDATE;
+    PERFORM pg_sleep(5);
+    RETURN 'locked ' || v1.account_number;
+END;
+$$ LANGUAGE plpgsql;
+
+
